@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from sklearn.model_selection import train_test_split
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -70,6 +72,15 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit probek walidacyjnych (0 = bez limitu).",
     )
+    parser.add_argument(
+        "--max-pool-samples",
+        type=int,
+        default=0,
+        help=(
+            "Limit puli przed splitem (stratified). 0 = auto (12000 gdy X_val>20k). "
+            "Wazne dla duzych .npz z Drive — bez tego Colab pada na RAM."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42, help="Seed dla reproducowalnosci.")
     parser.add_argument(
         "--use-tfdata",
@@ -95,6 +106,18 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Standaryzacja globalna X: (X-mean)/std liczone na train. Domyslnie wlaczone.",
     )
+    parser.add_argument(
+        "--mixed-precision",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Mixed float16 na GPU (Colab). Domyslnie wylaczone — stabilniejsze na CPU.",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Pomin wykresy accuracy/loss i macierz pomylek (np. serwer bez GUI).",
+    )
+    return parser.parse_args()
 
 
 def build_model(
@@ -149,6 +172,74 @@ def make_tf_dataset(
     return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 
+def save_training_plots(history: keras.callbacks.History, out_dir: Path) -> None:
+    hist = history.history
+    epochs = range(1, len(hist.get("loss", [])) + 1)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].plot(epochs, hist["loss"], label="train")
+    axes[0].plot(epochs, hist["val_loss"], label="val")
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].legend()
+
+    axes[1].plot(epochs, hist["accuracy"], label="train")
+    axes[1].plot(epochs, hist["val_accuracy"], label="val")
+    axes[1].set_title("Accuracy")
+    axes[1].set_xlabel("Epoch")
+    axes[1].legend()
+
+    plt.tight_layout()
+    path = out_dir / "training_history.png"
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"[OK] Wykres treningu: {path}")
+
+
+def save_confusion_matrix_plot(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    out_dir: Path,
+) -> None:
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
+    fig, ax = plt.subplots(figsize=(10, 8))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+    disp.plot(ax=ax, cmap="Blues", xticks_rotation=45, values_format="d")
+    ax.set_title("Confusion Matrix (val)")
+    plt.tight_layout()
+    path = out_dir / "confusion_matrix.png"
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"[OK] Macierz pomylek: {path}")
+
+
+def stratified_subsample_indices(
+    y: np.ndarray,
+    n_samples: int,
+    seed: int,
+) -> np.ndarray:
+    """Losuje n_samples indeksow z zachowaniem proporcji klas."""
+    n = len(y)
+    if n_samples >= n:
+        return np.arange(n)
+    idx_sub, _ = train_test_split(
+        np.arange(n),
+        train_size=n_samples,
+        stratify=y,
+        random_state=seed,
+    )
+    return np.asarray(idx_sub, dtype=np.int64)
+
+
+def resolve_pool_cap(n_pool: int, max_pool_samples: int) -> int:
+    if max_pool_samples > 0:
+        return min(max_pool_samples, n_pool)
+    if n_pool > 20_000:
+        return 12_000
+    return n_pool
+
+
 def main() -> None:
     args = parse_args()
     np.random.seed(args.seed)
@@ -161,16 +252,16 @@ def main() -> None:
     if not data_path.exists():
         raise FileNotFoundError(f"Nie znaleziono datasetu: {data_path}")
 
-    print(f"[INFO] Wczytuje dataset: {data_path}")
-    data = np.load(data_path, allow_pickle=True)
+    print(f"[INFO] Wczytuje dataset (mmap): {data_path}")
+    data = np.load(data_path, allow_pickle=True, mmap_mode="r")
     required_keys = {"X_train", "y_train", "X_val", "y_val", "classes"}
     if not required_keys.issubset(data.files):
         raise ValueError(f"Dataset nie zawiera wymaganych kluczy: {required_keys}")
 
     X_train = data["X_train"]
-    y_train = data["y_train"]
+    y_train = np.asarray(data["y_train"])
     X_val = data["X_val"]
-    y_val = data["y_val"]
+    y_val = np.asarray(data["y_val"])
     classes = data["classes"]
 
     print("[INFO] Oryginalne ksztalty:")
@@ -183,16 +274,43 @@ def main() -> None:
     if not (0.0 < args.val_fraction < 1.0):
         raise ValueError("--val-fraction musi byc w zakresie (0, 1).")
 
-    # Korzystamy z duzej puli (oryginalne X_val/y_val), bo X_train ma tylko 720 probek.
-    idx_all = np.arange(len(y_val))
-    idx_tr, idx_va = train_test_split(
-        idx_all,
+    # Pula treningowa: duze X_val (np. z Drive) albo X_train gdy val jest malutkie.
+    use_large_val_pool = len(y_val) > max(len(y_train) * 2, 5000)
+    if use_large_val_pool:
+        pool_y = y_val
+        pool_X = X_val
+        pool_name = "X_val"
+    else:
+        pool_y = np.concatenate([y_train, y_val])
+        pool_X = np.concatenate(
+            [np.asarray(X_train), np.asarray(X_val)],
+            axis=0,
+        )
+        pool_name = "X_train+X_val"
+
+    pool_cap = resolve_pool_cap(len(pool_y), args.max_pool_samples)
+    if pool_cap < len(pool_y):
+        print(
+            f"[INFO] Pula {pool_name} ma {len(pool_y)} probek — "
+            f"ograniczam do {pool_cap} (stratified, bez ladowania calego X do RAM)."
+        )
+        idx_pool = stratified_subsample_indices(pool_y, pool_cap, args.seed)
+        pool_y = pool_y[idx_pool]
+        pool_X = pool_X  # mmap: indeksujemy pozniej
+    else:
+        idx_pool = np.arange(len(pool_y), dtype=np.int64)
+
+    idx_tr_local, idx_va_local = train_test_split(
+        np.arange(len(pool_y)),
         test_size=args.val_fraction,
         random_state=args.seed,
-        stratify=y_val,
+        stratify=pool_y,
     )
 
-    print("[INFO] Split z duzej puli (stratified):")
+    idx_tr = idx_pool[idx_tr_local]
+    idx_va = idx_pool[idx_va_local]
+
+    print(f"[INFO] Split z puli ({pool_name}, stratified):")
     print(f"  train_idx: {idx_tr.shape[0]}")
     print(f"  val_idx  : {idx_va.shape[0]}")
 
@@ -210,10 +328,19 @@ def main() -> None:
         idx_va = idx_va[: args.max_val_samples]
         print(f"[INFO] Ograniczono val do: {idx_va.shape[0]} probek")
 
-    X_tr = np.asarray(X_val[idx_tr], dtype=np.float32)
-    y_tr = np.asarray(y_val[idx_tr], dtype=np.int64)
-    X_va = np.asarray(X_val[idx_va], dtype=np.float32)
-    y_va = np.asarray(y_val[idx_va], dtype=np.int64)
+    print("[INFO] Laduje wybrane probki z mmap (tylko podzbior indeksow)...")
+    if use_large_val_pool:
+        X_tr = np.asarray(X_val[idx_tr], dtype=np.float32)
+        y_tr = y_val[idx_tr]
+        X_va = np.asarray(X_val[idx_va], dtype=np.float32)
+        y_va = y_val[idx_va]
+    else:
+        X_tr = np.asarray(pool_X[idx_tr], dtype=np.float32)
+        y_tr = pool_y[idx_tr]
+        X_va = np.asarray(pool_X[idx_va], dtype=np.float32)
+        y_va = pool_y[idx_va]
+    y_tr = np.asarray(y_tr, dtype=np.int64)
+    y_va = np.asarray(y_va, dtype=np.int64)
 
     if args.standardize_inputs:
         mean = float(X_tr.mean())
@@ -339,6 +466,15 @@ def main() -> None:
 
     best_val_acc = max(history.history.get("val_accuracy", [float("nan")]))
     print(f"[INFO] Najlepsze val_accuracy: {best_val_acc:.4f}")
+
+    y_pred = np.argmax(model.predict(X_va, verbose=0), axis=1)
+    val_acc = float(np.mean(y_pred == y_va))
+    print(f"[INFO] val_accuracy (recount): {val_acc:.4f}")
+
+    class_names = [str(c) for c in classes]
+    if not args.no_plots:
+        save_training_plots(history, out_dir)
+        save_confusion_matrix_plot(y_va, y_pred, class_names, out_dir)
 
 
 if __name__ == "__main__":

@@ -120,19 +120,46 @@ Oktawa jest redukowana (A3 i A4 → ta sama klasa „A").
 ### Faza 1 — Deep Learning (in progress)
 - [x] Setup środowiska i pobranie datasetu
 - [x] Walidacja struktury pickli i parametrów sygnału (SR, strojenie, spójność etykiet)
-- [x] Preprocessing: batch generowanie Mel-spektrogramów (`scripts/preprocess.py`)
-- [x] Etykietowanie (parsing nazw plików → klasa 0..11)
-- [ ] Model CNN: 3× (Conv2D + MaxPool) + Dense/Softmax (`scripts/train.py`)
-- [ ] Trening + wykresy Accuracy/Loss + Confusion Matrix
-- [ ] Eksport do `.tflite`
+- [x] Skrypt preprocessingu (`scripts/preprocess.py`) — **uruchom lokalnie / w Colab**
+- [x] Skrypt treningu CNN (`scripts/train.py`) — wykresy + TFLite
+- [ ] Wygenerowany `data_processed/dataset.npz` (commitowany lub odtwarzany w Colab)
+- [ ] Trening z powtarzalnym wynikiem (accuracy >> 8.3% losowej)
+- [ ] Eksport `.tflite` zweryfikowany
 
 ### Faza 2 — integracja Android (planowana)
 - [ ] Pre-processing audio z mikrofonu w Kotlinie (resampling, normalizacja stroju)
 - [ ] Załadowanie `.tflite` w aplikacji
 - [ ] UI z feedbackiem w czasie rzeczywistym
 
-## Status (ostatnia sesja)
-- Środowisko gotowe, Kaggle CLI autoryzowany.
-- Dataset pobrany, struktura rozpoznana, parametry sygnału ustalone.
-- Pipeline preprocessingu napisany — czeka na pierwsze odpalenie i weryfikację wyników.
-- **Następny krok**: `python scripts/preprocess.py`, potem `scripts/train.py` (CNN).
+## Trening (lokalnie lub Google Colab)
+
+### Lokalnie (PyCharm / terminal)
+```powershell
+.\.venv\Scripts\activate
+python scripts/preprocess.py
+python scripts/train.py --no-plots
+```
+Wyniki: `models/piano_cnn.keras`, `models/piano_cnn.tflite`, `models/training_history.png`, `models/confusion_matrix.png`.
+
+### Google Colab (gdy lokalnie brak GPU / różne wyniki)
+1. Sklonuj repo lub wgraj folder `scripts/` + `requirements.txt`.
+2. Zainstaluj zależności: `pip install -r requirements.txt`
+3. Pobierz dataset (token Kaggle w Colab → Secrets lub upload `access_token`):
+   ```python
+   !pip install -q kaggle
+   # token w ~/.kaggle/access_token
+   !kaggle datasets download -d riccardosimionato/pianorecordingssinglenotes -p data_raw --unzip
+   ```
+4. Preprocessing + trening:
+   ```python
+   !python scripts/preprocess.py
+   !python scripts/train.py --mixed-precision --no-plots --epochs 30
+   ```
+5. Pobierz `models/` i `data_processed/dataset.npz` z Colab (Files → Download).
+
+**Uwaga:** `train.py` domyślnie trenuje na **dużej puli** `X_val` (~1296 próbek), nie na małym `X_train` (720). To celowe — lepsza generalizacja. Oczekiwana losowa accuracy: **8.3%** (1/12); dobry model: **>70%** val.
+
+## Status
+- Dataset w `data_raw/` (pickle Grand + Upright).
+- `scripts/train.py` naprawiony (`--mixed-precision`, wykresy, confusion matrix).
+- **Następny krok:** `preprocess.py` → `train.py` i porównanie val_accuracy z poprzednimi próbami w Colab.
