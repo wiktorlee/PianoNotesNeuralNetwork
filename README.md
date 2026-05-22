@@ -1,165 +1,129 @@
-# InstrumentTrainer AI — Faza 1 (Deep Learning)
+# Piano note classifier (SN - faza 1)
 
-Klasyfikator wysokości dźwięku pojedynczych nut pianina (12 klas: C, C#, D, D#, E, F, F#, G, G#, A, A#, B) oparty o CNN + Mel-spektrogramy.
+Projekt na sieci neuronowe. Klasyfikacja pojedynczej nuty pianina na 12 klas (C, C#, D, ..., B) z Mel-spektrogramu. Docelowo mial sluzyc pod aplikacje na Androida (TFLite), na razie jest pipeline w Pythonie.
 
-Docelowo: silnik aplikacji mobilnej **InstrumentTrainer** (Android/Kotlin), która analizuje dźwięk z mikrofonu w czasie rzeczywistym i daje użytkownikowi feedback o zagranej nucie.
+## Technologie
 
-## Stack
 - Python 3.11
-- TensorFlow / Keras (modelowanie)
-- Librosa (przetwarzanie sygnałów)
-- NumPy, Matplotlib, scikit-learn
-- Kaggle CLI (>=1.8.0) do pobierania datasetu
-- Eksport do TensorFlow Lite (`.tflite`) → Android (Kotlin)
+- TensorFlow / Keras
+- librosa, numpy, matplotlib, scikit-learn
+- Kaggle CLI do pobrania danych
 
-## Struktura projektu
+## Struktura
+
 ```
 SieciNeuronowe/
-├── data_raw/          # surowe pliki z Kaggle (NIE wrzucane do git)
-├── data_processed/    # gotowy zbiór .npz po preprocessingu (NIE wrzucany do git)
-├── models/            # zapisane modele .h5, .tflite (NIE wrzucane do git)
-├── notebooks/         # eksperymenty w Jupyter
-├── scripts/           # skrypty Pythonowe (pipeline)
-├── requirements.txt
-└── .gitignore
+  data_raw/           surowe dane z Kaggle (nie w git)
+  data_processed/     dataset.npz po preprocessingu (nie w git)
+  models/             modele i wykresy po treningu (nie w git)
+  scripts/
+  notebooks/
+  requirements.txt
 ```
 
 ## Dataset
 
-Używamy [`riccardosimionato/pianorecordingssinglenotes`](https://www.kaggle.com/datasets/riccardosimionato/pianorecordingssinglenotes) (~4.35 GB).
+Kaggle: riccardosimionato/pianorecordingssinglenotes (ok. 4 GB po rozpakowaniu).
 
-Struktura po rozpakowaniu:
-```
-data_raw/
-├── PianoRecordingsSingleNotes.wav    # monolityczne nagranie 7 minut @ 48 kHz
-├── PianoRecordingsSingleNotes.mid    # MIDI z czasami nut
-├── Grand/                            # pianino koncertowe, 24 pickle (12 nut × oktawy 3, 4)
-├── Upright/                          # pianino pionowe, 24 pickle
-├── Chords/                           # akordy (nieużywane w Fazie 1)
-└── Sample-based*/                    # dodatkowe sample
-```
+Uzywam folderow Grand/ i Upright/ - po 24 pliki pickle (12 nut, 2 oktawy). W pickle jest dict z kluczami train/val; z kazdego pliku bierzemy tylko prawdziwe nagrania audio z grupy [0], reszte grup odrzucamy (tam byly smieciowe macierze i metadane).
 
-Każdy plik `DatasetSingleNote*_split_<NUTA><OKTAWA>.pickle` zawiera dict:
-```python
-{
-    "train": list[7],   # 7 grup dynamiki, każda (6, 200000) sampli
-    "val"  : list[7],   # 7 grup dynamiki, każda (1, 200000) sampli
-    "max"  : float,     # współczynnik normalizacji
-}
-```
-**~49 wariantów** tej samej nuty per pickle (42 train + 7 val).
+Po preprocessingu:
 
-### Parametry sygnału (ustalone empirycznie)
-- **Sample rate**: 22050 Hz
-- **Strojenie**: nieortodoksyjne (A4 ≈ 404 Hz zamiast 440 Hz), ale **wewnętrznie spójne** — sprawdzone testem A3/A4 (stosunek pitchów = 0.5004).
+- X_train: (288, 128, 44, 1)
+- X_val: (48, 128, 44, 1)
+- razem 336 probek, 12 klas
 
-## Setup
+train.py laczy train+val, robi stratified split (domyslnie 90/10) i wychodzi ok. 302 probek treningowych i 34 walidacyjnych.
 
-### 1. Wirtualne środowisko + zależności
+Sample rate: 22050 Hz. Strojenie w danych nie jest 440 Hz (A4 ok. 404 Hz), ale jest spojne w calym zbiorze - sprawdzalem validate_pickle.
+
+## Etykiety
+
+Z nazwy pliku (Cd = C#, oktawa odpada):
+
+C=0, C#=1, D=2, D#=3, E=4, F=5, F#=6, G=7, G#=8, A=9, A#=10, B=11
+
+## Instalacja
+
 ```powershell
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Token API Kaggle (jednorazowo)
-Nowy system tokenów (Kaggle CLI >= 1.8.0):
-1. Wejdź na [Kaggle Settings → API Tokens](https://www.kaggle.com/settings/account).
-2. Kliknij **Generate New Token** (sekcja „API Tokens (Recommended)").
-3. Skopiuj wyświetlony token.
-4. Zapisz go (sam ciąg znaków, bez cudzysłowów) do pliku:
-   ```
-   C:\Users\<user>\.kaggle\access_token
-   ```
-   Uwaga: bez rozszerzenia `.txt`.
+Token Kaggle (nowy format): wygenerowac na stronie konta, zapisac jako plik:
 
-### 3. Pobranie datasetu
+`C:\Users\<user>\.kaggle\access_token` (bez .txt)
+
+Pobranie danych:
+
 ```powershell
 kaggle datasets download -d riccardosimionato/pianorecordingssinglenotes -p data_raw --unzip
 ```
-Albo przez skrypt:
+
+albo `python scripts/download_dataset.py`
+
+## Skrypty
+
+- download_dataset.py - pobranie z Kaggle
+- inspect_dataset.py, validate_pickle.py - sprawdzenie pickli
+- test_spectrogram.py - podglad mel
+- preprocess.py - mel-spektrogramy do data_processed/dataset.npz
+- train.py - trening CNN, zapis .keras / .h5 / .tflite
+- plot_training_dynamics.py - wykresy z przebiegu uczenia (loss, lr, wagi)
+- evaluate_plots.py - mel grid i rozkład klas (domyslnie bez metryk 100%)
+
+Preprocessing: okno 1 s, n_mels=128, n_fft=2048, hop_length=512.
+
+## Model
+
+Proste CNN (nie ResNet itp.):
+
+- 3x Conv2D (32, 64, 128) + MaxPool
+- Dense 128 + Dropout 0.3
+- softmax 12 klas
+
+Bez BatchNorm - z BN na tym zbiorze wychodzilo slabo. Wejscie standaryzowane (mean/std z train).
+
+## Uruchomienie
+
 ```powershell
-python scripts/download_dataset.py
-```
-
-## Pipeline
-
-### Skrypty
-- `scripts/download_dataset.py` — pobiera dataset z Kaggle do `data_raw/`.
-- `scripts/test_spectrogram.py` — sanity-check, wyświetla pierwszy Mel-spektrogram.
-- `scripts/inspect_dataset.py` — diagnostyka struktury pickli.
-- `scripts/validate_pickle.py` — wykrywa SR, sprawdza spójność etykietowania (A3/A4 oktawa).
-- `scripts/preprocess.py` — przetwarza wszystkie 48 pickli → `data_processed/dataset.npz`.
-
-### Parametry preprocessingu
-- **SR** = 22050 Hz
-- **Długość okna** = 1.0 s = 22050 sampli
-- **Mel-spektrogram**: `n_mels=128`, `n_fft=2048`, `hop_length=512`
-- **Output shape**: `(N, 128, 44, 1)` — gotowe dla `Conv2D`
-
-### Mapowanie etykiet (z nazwy pliku → klasa 0–11)
-Dataset używa konwencji `d` (diesis) zamiast `#`:
-| Plik | Nuta | Klasa |
-|------|------|-------|
-| `C` | C | 0 |
-| `Cd` | C# | 1 |
-| `D` | D | 2 |
-| `Dd` | D# | 3 |
-| `E` | E | 4 |
-| `F` | F | 5 |
-| `Fd` | F# | 6 |
-| `G` | G | 7 |
-| `Gd` | G# | 8 |
-| `A` | A | 9 |
-| `Ad` | A# | 10 |
-| `B` | B | 11 |
-
-Oktawa jest redukowana (A3 i A4 → ta sama klasa „A").
-
-## Roadmap
-
-### Faza 1 — Deep Learning (in progress)
-- [x] Setup środowiska i pobranie datasetu
-- [x] Walidacja struktury pickli i parametrów sygnału (SR, strojenie, spójność etykiet)
-- [x] Skrypt preprocessingu (`scripts/preprocess.py`) — **uruchom lokalnie / w Colab**
-- [x] Skrypt treningu CNN (`scripts/train.py`) — wykresy + TFLite
-- [ ] Wygenerowany `data_processed/dataset.npz` (commitowany lub odtwarzany w Colab)
-- [ ] Trening z powtarzalnym wynikiem (accuracy >> 8.3% losowej)
-- [ ] Eksport `.tflite` zweryfikowany
-
-### Faza 2 — integracja Android (planowana)
-- [ ] Pre-processing audio z mikrofonu w Kotlinie (resampling, normalizacja stroju)
-- [ ] Załadowanie `.tflite` w aplikacji
-- [ ] UI z feedbackiem w czasie rzeczywistym
-
-## Trening (lokalnie lub Google Colab)
-
-### Lokalnie (PyCharm / terminal)
-```powershell
-.\.venv\Scripts\activate
 python scripts/preprocess.py
-python scripts/train.py --no-plots
+python scripts/train.py
 ```
-Wyniki: `models/piano_cnn.keras`, `models/piano_cnn.tflite`, `models/training_history.png`, `models/confusion_matrix.png`.
 
-### Google Colab (gdy lokalnie brak GPU / różne wyniki)
-1. Sklonuj repo lub wgraj folder `scripts/` + `requirements.txt`.
-2. Zainstaluj zależności: `pip install -r requirements.txt`
-3. Pobierz dataset (token Kaggle w Colab → Secrets lub upload `access_token`):
-   ```python
-   !pip install -q kaggle
-   # token w ~/.kaggle/access_token
-   !kaggle datasets download -d riccardosimionato/pianorecordingssinglenotes -p data_raw --unzip
-   ```
-4. Preprocessing + trening:
-   ```python
-   !python scripts/preprocess.py
-   !python scripts/train.py --mixed-precision --no-plots --epochs 30
-   ```
-5. Pobierz `models/` i `data_processed/dataset.npz` z Colab (Files → Download).
+Opcjonalnie po treningu (jesli bylo --no-plots):
 
-**Uwaga:** `train.py` domyślnie trenuje na **dużej puli** `X_val` (~1296 próbek), nie na małym `X_train` (720). To celowe — lepsza generalizacja. Oczekiwana losowa accuracy: **8.3%** (1/12); dobry model: **>70%** val.
+```powershell
+python scripts/plot_training_dynamics.py
+python scripts/evaluate_plots.py
+```
+
+Wyniki:
+
+- models/piano_cnn.keras, piano_cnn_best.keras, piano_cnn.tflite
+- models/training_history.npz, training_dynamics.npz
+- models/plots/ - wykresy (learning_curves, learning_rate, normy wag, macierz pomylek)
+
+train.py z --no-plots pomija generowanie PNG.
+
+## Wyniki (lokalnie)
+
+Na poprawnym dataset.npz: val_accuracy ok. 100% po kilku epokach (EarlyStopping, zwykle 8-10 epok). To na malym val (34 probki) - nie traktowalb tego jako dowodu ze model jest gotowy na mikrofon na zywo.
+
+Losowa accuracy to 1/12 ok. 8.3%.
+
+## Colab
+
+W Colab nie instalowac calego requirements.txt z sztywnym tensorflow - lepiej wbudowane TF + pip install librosa soundfile scikit-learn.
+
+Kolejnosc: preprocess, potem train. Duze zipy i modele nie wrzucac do git (sa w gitignore).
+
+## Co zostalo na pozniej
+
+- sprawozdanie na SN (opis danych, sieci, wykresow, ograniczen)
+- ewentualnie wiecej danych / augmentacja
+- faza 2: Android + mikrofon (poza tym repo)
 
 ## Status
-- Dataset w `data_raw/` (pickle Grand + Upright).
-- `scripts/train.py` naprawiony (`--mixed-precision`, wykresy, confusion matrix).
-- **Następny krok:** `preprocess.py` → `train.py` i porównanie val_accuracy z poprzednimi próbami w Colab.
+
+Faza 1 technicznie zrobiona: preprocess, trening, TFLite, wykresy procesu uczenia. README i kod w repo; dane i modele lokalnie u kazdego kto odtwarza pipeline.

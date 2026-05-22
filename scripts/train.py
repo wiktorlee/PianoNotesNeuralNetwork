@@ -1,33 +1,25 @@
-"""
-Training CNN modelu do klasyfikacji nut pianina (12 klas).
-
-Domyslnie:
-  - wczytuje dataset z data_processed/dataset.npz
-  - uzywa duzej puli (oryginalne X_val/y_val) i robi stratified train/val
-  - przed limitem probek opcjonalnie tasuje indeksy (--shuffle-index-subset); domyslnie wylaczone
-  - domyslnie standaryzuje wejscie X (mean/std z train), co zwykle pomaga po usunieciu BN
-  - trenuje CNN (3x Conv2D + ReLU + MaxPool + Dense); bez BatchNorm (stabilniejsze na tym zbiorze)
-  - opcjonalnie tf.data (prefetch), mixed precision na GPU, checkpoint najlepszego modelu
-  - zapisuje .keras / .h5 / .tflite do models/
-
-Uzycie:
-  python scripts/train.py
-"""
-
 from __future__ import annotations
 
+
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
-from sklearn.model_selection import train_test_split
 from tensorflow import keras
 from tensorflow.keras import layers
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from dataset_split import load_train_val_split
+from training_logger import TrainingDynamicsCallback
+
+PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_DATA_PATH = PROJECT_ROOT / "data_processed" / "dataset.npz"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
 
@@ -126,11 +118,7 @@ def build_model(
     learning_rate: float,
     mixed_precision: bool,
 ) -> keras.Model:
-    """CNN z README: 3x (Conv2D + ReLU + MaxPool), Dense, Softmax.
-
-    Bez BatchNorm (na tym zbiorze potrafil utknac na ~losowej dokladnosci).
-    """
-    _ = mixed_precision  # polityka ustawiana w main(); tu tylko sygnatura dla API.
+    _ = mixed_precision
 
     model = keras.Sequential(
         [
@@ -214,142 +202,41 @@ def save_confusion_matrix_plot(
     print(f"[OK] Macierz pomylek: {path}")
 
 
-def stratified_subsample_indices(
-    y: np.ndarray,
-    n_samples: int,
-    seed: int,
-) -> np.ndarray:
-    """Losuje n_samples indeksow z zachowaniem proporcji klas."""
-    n = len(y)
-    if n_samples >= n:
-        return np.arange(n)
-    idx_sub, _ = train_test_split(
-        np.arange(n),
-        train_size=n_samples,
-        stratify=y,
-        random_state=seed,
-    )
-    return np.asarray(idx_sub, dtype=np.int64)
-
-
-def resolve_pool_cap(n_pool: int, max_pool_samples: int) -> int:
-    if max_pool_samples > 0:
-        return min(max_pool_samples, n_pool)
-    if n_pool > 20_000:
-        return 12_000
-    return n_pool
+def save_training_history_npz(history: keras.callbacks.History, out_dir: Path) -> None:
+    path = out_dir / "training_history.npz"
+    np.savez(path, **{k: np.asarray(v) for k, v in history.history.items()})
+    print(f"[OK] Historia treningu: {path}")
 
 
 def main() -> None:
     args = parse_args()
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
-    rng = np.random.default_rng(args.seed) if args.shuffle_index_subset else None
 
     data_path = args.data
     out_dir = args.out_dir
 
-    if not data_path.exists():
-        raise FileNotFoundError(f"Nie znaleziono datasetu: {data_path}")
-
     print(f"[INFO] Wczytuje dataset (mmap): {data_path}")
-    data = np.load(data_path, allow_pickle=True, mmap_mode="r")
-    required_keys = {"X_train", "y_train", "X_val", "y_val", "classes"}
-    if not required_keys.issubset(data.files):
-        raise ValueError(f"Dataset nie zawiera wymaganych kluczy: {required_keys}")
-
-    X_train = data["X_train"]
-    y_train = np.asarray(data["y_train"])
-    X_val = data["X_val"]
-    y_val = np.asarray(data["y_val"])
-    classes = data["classes"]
-
-    print("[INFO] Oryginalne ksztalty:")
-    print(f"  X_train: {X_train.shape} dtype={X_train.dtype}")
-    print(f"  y_train: {y_train.shape} dtype={y_train.dtype}")
-    print(f"  X_val  : {X_val.shape} dtype={X_val.dtype}")
-    print(f"  y_val  : {y_val.shape} dtype={y_val.dtype}")
-    print(f"  classes: {classes}")
-
-    if not (0.0 < args.val_fraction < 1.0):
-        raise ValueError("--val-fraction musi byc w zakresie (0, 1).")
-
-    # Pula treningowa: duze X_val (np. z Drive) albo X_train gdy val jest malutkie.
-    use_large_val_pool = len(y_val) > max(len(y_train) * 2, 5000)
-    if use_large_val_pool:
-        pool_y = y_val
-        pool_X = X_val
-        pool_name = "X_val"
-    else:
-        pool_y = np.concatenate([y_train, y_val])
-        pool_X = np.concatenate(
-            [np.asarray(X_train), np.asarray(X_val)],
-            axis=0,
-        )
-        pool_name = "X_train+X_val"
-
-    pool_cap = resolve_pool_cap(len(pool_y), args.max_pool_samples)
-    if pool_cap < len(pool_y):
-        print(
-            f"[INFO] Pula {pool_name} ma {len(pool_y)} probek — "
-            f"ograniczam do {pool_cap} (stratified, bez ladowania calego X do RAM)."
-        )
-        idx_pool = stratified_subsample_indices(pool_y, pool_cap, args.seed)
-        pool_y = pool_y[idx_pool]
-        pool_X = pool_X  # mmap: indeksujemy pozniej
-    else:
-        idx_pool = np.arange(len(pool_y), dtype=np.int64)
-
-    idx_tr_local, idx_va_local = train_test_split(
-        np.arange(len(pool_y)),
-        test_size=args.val_fraction,
-        random_state=args.seed,
-        stratify=pool_y,
+    split = load_train_val_split(
+        data_path,
+        val_fraction=args.val_fraction,
+        max_pool_samples=args.max_pool_samples,
+        max_train_samples=args.max_train_samples,
+        max_val_samples=args.max_val_samples,
+        shuffle_index_subset=args.shuffle_index_subset,
+        standardize_inputs=args.standardize_inputs,
+        seed=args.seed,
     )
-
-    idx_tr = idx_pool[idx_tr_local]
-    idx_va = idx_pool[idx_va_local]
-
-    print(f"[INFO] Split z puli ({pool_name}, stratified):")
-    print(f"  train_idx: {idx_tr.shape[0]}")
-    print(f"  val_idx  : {idx_va.shape[0]}")
-
-    if args.shuffle_index_subset:
-        assert rng is not None
-        idx_tr = rng.permutation(idx_tr)
-        idx_va = rng.permutation(idx_va)
-        print("[INFO] Zastosowano tasowanie indeksow przed obcieciem (--shuffle-index-subset).")
-
-    if args.max_train_samples > 0 and args.max_train_samples < len(idx_tr):
-        idx_tr = idx_tr[: args.max_train_samples]
-        print(f"[INFO] Ograniczono train do: {idx_tr.shape[0]} probek")
-
-    if args.max_val_samples > 0 and args.max_val_samples < len(idx_va):
-        idx_va = idx_va[: args.max_val_samples]
-        print(f"[INFO] Ograniczono val do: {idx_va.shape[0]} probek")
-
-    print("[INFO] Laduje wybrane probki z mmap (tylko podzbior indeksow)...")
-    if use_large_val_pool:
-        X_tr = np.asarray(X_val[idx_tr], dtype=np.float32)
-        y_tr = y_val[idx_tr]
-        X_va = np.asarray(X_val[idx_va], dtype=np.float32)
-        y_va = y_val[idx_va]
-    else:
-        X_tr = np.asarray(pool_X[idx_tr], dtype=np.float32)
-        y_tr = pool_y[idx_tr]
-        X_va = np.asarray(pool_X[idx_va], dtype=np.float32)
-        y_va = pool_y[idx_va]
-    y_tr = np.asarray(y_tr, dtype=np.int64)
-    y_va = np.asarray(y_va, dtype=np.int64)
-
-    if args.standardize_inputs:
-        mean = float(X_tr.mean())
-        std = float(X_tr.std())
-        if std < 1e-6:
-            std = 1.0
-        X_tr = ((X_tr - mean) / std).astype(np.float32)
-        X_va = ((X_va - mean) / std).astype(np.float32)
-        print(f"[INFO] Standaryzacja wejscia (train): mean={mean:.6f}, std={std:.6f}")
+    X_tr = split.X_train
+    y_tr = split.y_train
+    X_va = split.X_val
+    y_va = split.y_val
+    classes = split.classes
+    if split.input_mean is not None:
+        print(
+            f"[INFO] Standaryzacja wejscia (train): mean={split.input_mean:.6f}, "
+            f"std={split.input_std:.6f}"
+        )
 
     print("[INFO] Finalne ksztalty:")
     print(f"  X_tr: {X_tr.shape}  y_tr: {y_tr.shape}")
@@ -377,8 +264,10 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     best_keras = out_dir / "piano_cnn_best.keras"
+    dynamics_cb = TrainingDynamicsCallback(seed=args.seed)
 
     callbacks = [
+        dynamics_cb,
         keras.callbacks.ModelCheckpoint(
             filepath=str(best_keras),
             monitor="val_accuracy",
@@ -445,8 +334,6 @@ def main() -> None:
     if best_keras.exists():
         print(f"[OK] Najlepszy checkpoint: {best_keras}")
 
-    # TFLite (mobilny interpreter) oczekuje typowych operatorow w float32.
-    # Model w mixed_float16 zostawia w grafie tf.Conv2D w f16 -> blad bez TF Select.
     keras.mixed_precision.set_global_policy("float32")
     export_model = build_model(
         input_shape=X_tr.shape[1:],
@@ -471,10 +358,25 @@ def main() -> None:
     val_acc = float(np.mean(y_pred == y_va))
     print(f"[INFO] val_accuracy (recount): {val_acc:.4f}")
 
+    save_training_history_npz(history, out_dir)
+    dynamics_path = out_dir / "training_dynamics.npz"
+    dynamics_cb.save_npz(dynamics_path)
+
     class_names = [str(c) for c in classes]
     if not args.no_plots:
-        save_training_plots(history, out_dir)
-        save_confusion_matrix_plot(y_va, y_pred, class_names, out_dir)
+        from plot_training_dynamics import generate_plots
+
+        plots_dir = out_dir / "plots"
+        generate_plots(
+            out_dir / "training_history.npz",
+            dynamics_path,
+            plots_dir,
+        )
+        save_confusion_matrix_plot(y_va, y_pred, class_names, plots_dir)
+        print(
+            "[INFO] Wykresy danych (Mel, rozkład klas): "
+            "python scripts/evaluate_plots.py"
+        )
 
 
 if __name__ == "__main__":
