@@ -29,6 +29,16 @@ data_raw_piano.zip
 *.midi
 
 models/
+models/plots/
+
+# LaTeX build artifacts (sprawozdanie)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls
 
 .ipynb_checkpoints/
 *.ipynb_meta

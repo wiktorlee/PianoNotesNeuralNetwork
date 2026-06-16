@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+import platform
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -334,23 +335,6 @@ def main() -> None:
     if best_keras.exists():
         print(f"[OK] Najlepszy checkpoint: {best_keras}")
 
-    keras.mixed_precision.set_global_policy("float32")
-    export_model = build_model(
-        input_shape=X_tr.shape[1:],
-        num_classes=num_classes,
-        learning_rate=args.learning_rate,
-        mixed_precision=False,
-    )
-    export_model.set_weights(model.get_weights())
-    print("[INFO] Eksport TFLite z kopii modelu w float32 (bez mixed precision).")
-
-    converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
-    tflite_model = converter.convert()
-    tflite_path = out_dir / "piano_cnn.tflite"
-    with open(tflite_path, "wb") as f:
-        f.write(tflite_model)
-    print(f"[OK] Zapisano model TFLite: {tflite_path}")
-
     best_val_acc = max(history.history.get("val_accuracy", [float("nan")]))
     print(f"[INFO] Najlepsze val_accuracy: {best_val_acc:.4f}")
 
@@ -377,6 +361,36 @@ def main() -> None:
             "[INFO] Wykresy danych (Mel, rozkład klas): "
             "python scripts/evaluate_plots.py"
         )
+
+    # Eksport TFLite wykonujemy na koncu, bo na Windows (TF/MLIR) zdarza sie crash.
+    # Dzięki temu historia treningu i wykresy sa zapisane nawet gdy konwersja sie nie uda.
+    if platform.system().lower().startswith("win"):
+        print(
+            "[WARN] Pomijam eksport TFLite na Windows (znany crash TF/MLIR). "
+            "Model .keras/.h5 oraz wszystkie wykresy sa zapisane."
+        )
+        return
+
+    keras.mixed_precision.set_global_policy("float32")
+    export_model = build_model(
+        input_shape=X_tr.shape[1:],
+        num_classes=num_classes,
+        learning_rate=args.learning_rate,
+        mixed_precision=False,
+    )
+    export_model.set_weights(model.get_weights())
+    print("[INFO] Eksport TFLite z kopii modelu w float32 (bez mixed precision).")
+
+    try:
+        converter = tf.lite.TFLiteConverter.from_keras_model(export_model)
+        tflite_model = converter.convert()
+        tflite_path = out_dir / "piano_cnn.tflite"
+        with open(tflite_path, "wb") as f:
+            f.write(tflite_model)
+        print(f"[OK] Zapisano model TFLite: {tflite_path}")
+    except Exception as exc:
+        print(f"[WARN] Nie udalo sie wyeksportowac TFLite: {exc}")
+        print("[WARN] Trening, checkpointy i wykresy zostaly zapisane poprawnie.")
 
 
 if __name__ == "__main__":

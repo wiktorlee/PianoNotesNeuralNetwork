@@ -118,12 +118,22 @@ W Colab nie instalowac calego requirements.txt z sztywnym tensorflow - lepiej wb
 
 Kolejnosc: preprocess, potem train. Duze zipy i modele nie wrzucac do git (sa w gitignore).
 
+## Podpiecie do aplikacji Android (PianoApp)
+
+Po treningu (`python scripts/train.py`) skopiuj model do repo aplikacji (sciezki wzgledem tego projektu):
+
+```powershell
+python scripts/export_android_metadata.py --out ..\PianoApp\app\src\main\assets\model_metadata.json
+copy models\piano_cnn.tflite ..\PianoApp\app\src\main\assets\piano_cnn.tflite
+```
+
+Bez `piano_cnn.tflite` w `assets/` aplikacja uruchamia sie z mockiem (losowe nuty). Z modelem — TFLite. `model_metadata.json` musi miec `inputMean`/`inputStd` z treningu (eksport skryptem, nie recznie 0/1).
+
 ## Co zostalo na pozniej
 
 - sprawozdanie na SN (opis danych, sieci, wykresow, ograniczen)
 - ewentualnie wiecej danych / augmentacja
-- faza 2: Android + mikrofon (poza tym repo)
 
 ## Status
 
-Faza 1 technicznie zrobiona: preprocess, trening, TFLite, wykresy procesu uczenia. README i kod w repo; dane i modele lokalnie u kazdego kto odtwarza pipeline.
+Faza 1 technicznie zrobiona: preprocess, trening, TFLite, wykresy procesu uczenia. Integracja z PianoApp: skopiuj `.tflite` + `model_metadata.json` (patrz sekcja wyzej). README i kod w repo; dane i modele lokalnie u kazdego kto odtwarza pipeline.
