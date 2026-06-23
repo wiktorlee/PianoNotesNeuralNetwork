@@ -1,13 +1,3 @@
-"""
-Test sanity-check: wczytuje pierwszy plik .wav z data_raw/
-i wyswietla jego Mel-spektrogram.
-
-Cel: upewnic sie, ze Librosa "widzi" Twoje pliki audio.
-
-Uzycie:
-  python scripts/test_spectrogram.py
-"""
-
 from pathlib import Path
 
 import librosa
@@ -18,15 +8,14 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_RAW_DIR = PROJECT_ROOT / "data_raw"
 
-SAMPLE_RATE = 22050      # standardowy SR dla librosa
-DURATION = 1.0           # 1 sekunda audio
-N_MELS = 128             # liczba pasm mel (zgodnie z zalozeniami projektu)
+SAMPLE_RATE = 22050
+DURATION = 1.0
+N_MELS = 128
 N_FFT = 2048
 HOP_LENGTH = 512
 
 
 def find_first_wav(root: Path) -> Path | None:
-    """Zwraca pierwszy znaleziony plik .wav (rekurencyjnie)."""
     for path in sorted(root.rglob("*.wav")):
         return path
     return None

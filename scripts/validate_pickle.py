@@ -1,16 +1,3 @@
-"""
-Walidacja zawartosci pickle'i.
-
-Cel: ustalic
-  1. jaka jest czestotliwosc probkowania (SR) sampli w pickle,
-  2. czy nuta etykietowana jako A4 ma rzeczywiscie pik FFT przy 440 Hz.
-
-To pozwoli nam pewnie ustawic parametry preprocessingu.
-
-Uzycie:
-  python scripts/validate_pickle.py
-"""
-
 from pathlib import Path
 import pickle
 
@@ -30,14 +17,12 @@ A4_FREQ_HZ = 440.0
 
 
 def load_first_sample(pickle_path: Path) -> np.ndarray:
-    """Zwraca pierwsze nagranie z dict['train'][0][0]."""
     with open(pickle_path, "rb") as f:
         data = pickle.load(f)
     return np.asarray(data["train"][0][0], dtype=np.float32)
 
 
 def dominant_freq(signal: np.ndarray, sr: int) -> float:
-    """Liczy FFT i zwraca dominujaca czestotliwosc."""
     spectrum = np.abs(np.fft.rfft(signal))
     freqs = np.fft.rfftfreq(len(signal), d=1.0 / sr)
 
@@ -46,7 +31,6 @@ def dominant_freq(signal: np.ndarray, sr: int) -> float:
 
 
 def top_n_freqs(signal: np.ndarray, sr: int, n: int = 5) -> list[tuple[float, float]]:
-    """Zwraca n najsilniejszych pikow FFT jako pary (freq_hz, energia)."""
     spectrum = np.abs(np.fft.rfft(signal))
     freqs = np.fft.rfftfreq(len(signal), d=1.0 / sr)
 
@@ -64,7 +48,6 @@ def top_n_freqs(signal: np.ndarray, sr: int, n: int = 5) -> list[tuple[float, fl
 
 
 def estimate_pitch_yin(signal: np.ndarray, sr: int) -> float:
-    """librosa.yin -> rzeczywista czestotliwosc fundamentu (nie harmoniczna)."""
     f0 = librosa.yin(
         signal.astype(np.float32),
         fmin=float(librosa.note_to_hz("C2")),

@@ -1,15 +1,3 @@
-"""
-Diagnostyka zawartosci datasetu PianoRecordingsSingleNotes.
-
-Zaglada do plikow .pickle i raportuje:
-  - typ obiektu
-  - ksztalty/dlugosci
-  - przykladowe wartosci
-
-Uzycie:
-  python scripts/inspect_dataset.py
-"""
-
 from pathlib import Path
 import pickle
 import sys
@@ -21,7 +9,6 @@ DATA_RAW_DIR = PROJECT_ROOT / "data_raw"
 
 
 def describe(obj, indent: int = 0) -> None:
-    """Rekursywnie opisuje strukture obiektu Pythona."""
     pad = "  " * indent
 
     if isinstance(obj, np.ndarray):

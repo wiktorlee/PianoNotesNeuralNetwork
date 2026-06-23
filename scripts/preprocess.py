@@ -1,19 +1,3 @@
-"""
-Preprocessing datasetu PianoRecordingsSingleNotes:
-
-  1. Iteruje po wszystkich pickle'ach z data_raw/Grand/ i data_raw/Upright/.
-  2. Z kazdego pickle wyciaga wszystkie nagrania (train + val).
-  3. Z kazdego nagrania bierze pierwsza sekunde (22050 sampli).
-  4. Liczy Mel-spektrogram (n_mels=128).
-  5. Etykietuje nuta z nazwy pliku, redukuje oktawe -> 12 klas (C..B).
-  6. Zapisuje data_processed/dataset.npz z X_train, y_train, X_val, y_val.
-
-Wersja oszczedna RAM (Colab): pre-alokacja tablic zamiast list + np.stack.
-
-Uzycie:
-  python scripts/preprocess.py
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,7 +14,6 @@ import numpy as np
 
 
 def resolve_project_root() -> Path:
-    """Znajdz folder z data_raw/ (Colab: /content lub repo z scripts/)."""
     script_dir = Path(__file__).resolve().parent
     for root in (script_dir, script_dir.parent):
         if (root / "data_raw").is_dir():
@@ -48,7 +31,6 @@ TARGET_LEN = int(SAMPLE_RATE * DURATION_SEC)
 N_MELS = 128
 N_FFT = 2048
 HOP_LENGTH = 512
-# Drugi wymiar 2D = dlugosc sygnalu w samplach; krotkie wiersze to smieci/metadane w pickle.
 MIN_AUDIO_SAMPLES = 10_000
 
 NOTE_TO_CLASS: dict[str, int] = {
@@ -106,7 +88,6 @@ def to_mel_spectrogram(audio_1d: np.ndarray) -> np.ndarray:
 
 
 def iter_recordings(pickle_path: Path):
-    """Tylko prawdziwe nagrania audio — pomija (6250, 6) i inne artefakty w grupach 1-6."""
     with open(pickle_path, "rb") as f:
         data = pickle.load(f)
 
@@ -126,7 +107,6 @@ def iter_recordings(pickle_path: Path):
                             yield row, split
                 elif arr.shape[0] >= MIN_AUDIO_SAMPLES and arr.shape[1] <= 8:
                     yield arr.reshape(-1), split
-            # ndim >= 3 lub macierze typu (6250, 6) — pomijamy
 
 
 def count_recordings(pickle_path: Path) -> tuple[int, int]:
@@ -218,7 +198,6 @@ def main() -> None:
 
     print(f"[INFO] Oczekiwane probki: train={total_train}, val={total_val}")
 
-    # Wymiar czasowy mel z probki (128, T)
     probe_path = pickle_paths[0]
     probe_mel = None
     for audio, _ in iter_recordings(probe_path):
